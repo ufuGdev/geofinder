@@ -25,3 +25,4 @@ GeoFinder is a Chrome extension that analyzes photos to guess their location. It
 
 ## 🔗 Links
 - [Google AI Studio](https://ai.google.dev/) - Get API Key
+- [Installation Guide](install.md) - Detailed setup instructions 
