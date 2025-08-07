@@ -4,7 +4,7 @@ class GeoFinderPopup {
         this.selectedImage = null;
         this.currentMethod = 'upload';
         this.selectedModel = 'gemini-2.0-flash-lite-001';
-        this.imageCache = new Map(); // Cache for storing images
+        this.imageCache = new Map();
         this.init();
     }
 
@@ -15,7 +15,7 @@ class GeoFinderPopup {
     }
 
     loadApiKey() {
-        chrome.storage.sync.get(['geminiApiKey', 'selectedModel'], (result) => {
+        chrome.storage.local.get(['geminiApiKey', 'selectedModel'], (result) => {
             if (result.geminiApiKey) {
                 this.apiKey = result.geminiApiKey;
                 document.getElementById('apiKey').value = this.apiKey;
@@ -30,29 +30,24 @@ class GeoFinderPopup {
     }
 
     setupEventListeners() {
-        // Settings button
         document.getElementById('settingsBtn').addEventListener('click', () => {
             this.openSettings();
         });
 
-        // Close settings button
-        document.getElementById('closeSettingsBtn').addEventListener('click', () => {
+        document.getElementById('backBtn').addEventListener('click', () => {
             this.closeSettings();
         });
 
-        // API Key save button
         document.getElementById('saveApiKey').addEventListener('click', () => {
             this.saveApiKey();
         });
 
-        // Method tabs
         document.querySelectorAll('.method-tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 this.switchMethod(tab.dataset.method);
             });
         });
 
-        // Image upload area
         const uploadArea = document.getElementById('uploadArea');
         const imageInput = document.getElementById('imageInput');
 
@@ -84,7 +79,6 @@ class GeoFinderPopup {
             }
         });
 
-        // URL method
         document.getElementById('loadUrlBtn').addEventListener('click', () => {
             this.loadImageFromUrl();
         });
@@ -95,17 +89,14 @@ class GeoFinderPopup {
             }
         });
 
-        // Screen capture methods
         document.getElementById('captureTabBtn').addEventListener('click', () => {
             this.captureCurrentTab();
         });
 
-        // Analyze button
         document.getElementById('analyzeBtn').addEventListener('click', () => {
             this.analyzeImage();
         });
 
-        // Enter key in API key input
         document.getElementById('apiKey').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 this.saveApiKey();
@@ -122,23 +113,20 @@ class GeoFinderPopup {
             return;
         }
 
-        // Show loading state
         const saveBtn = document.getElementById('saveApiKey');
         const originalText = saveBtn.textContent;
         saveBtn.textContent = 'Testing...';
         saveBtn.disabled = true;
 
         try {
-            // Test API key and determine model type
             const modelType = await this.detectApiKeyType(apiKey);
             
             this.apiKey = apiKey;
             this.selectedModel = modelType;
             
-            // Update UI
             document.getElementById('modelSelect').value = modelType;
             
-            chrome.storage.sync.set({ 
+            chrome.storage.local.set({ 
                 geminiApiKey: apiKey,
                 selectedModel: modelType 
             }, () => {
@@ -151,15 +139,16 @@ class GeoFinderPopup {
             console.error('API key test failed:', error);
             this.showError('Invalid API key');
         } finally {
-            // Reset button
             saveBtn.textContent = originalText;
             saveBtn.disabled = false;
         }
     }
 
     async detectApiKeyType(apiKey) {
-        // First try Pro model
+        console.log('Testing API key compatibility...');
+        
         try {
+            console.log('Testing Pro model (gemini-1.5-pro)...');
             const proResponse = await fetch(
                 `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
                 {
@@ -176,12 +165,15 @@ class GeoFinderPopup {
                 }
             );
 
+            console.log('Pro model response status:', proResponse.status);
+            
             if (proResponse.ok) {
-                return 'gemini-1.5-pro'; // Pro model works
+                console.log('Pro model works!');
+                return 'gemini-1.5-pro';
             }
             
-            // If Pro fails with 403/401, try Free model
             if (proResponse.status === 403 || proResponse.status === 401) {
+                console.log('Pro model access denied, testing Free model...');
                 const freeResponse = await fetch(
                     `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite-001:generateContent?key=${apiKey}`,
                     {
@@ -198,16 +190,24 @@ class GeoFinderPopup {
                     }
                 );
 
+                console.log('Free model response status:', freeResponse.status);
+                
                 if (freeResponse.ok) {
-                    return 'gemini-2.0-flash-lite-001'; // Free model works
+                    console.log('Free model works!');
+                    return 'gemini-2.0-flash-lite-001';
+                } else {
+                    const errorText = await freeResponse.text();
+                    console.error('Free model failed:', freeResponse.status, errorText);
                 }
             }
             
             throw new Error('API key not valid for any model');
             
         } catch (error) {
-            // If Pro fails with network error, try Free as fallback
+            console.error('Pro model test failed:', error);
+            
             try {
+                console.log('Trying Free model as fallback...');
                 const freeResponse = await fetch(
                     `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite-001:generateContent?key=${apiKey}`,
                     {
@@ -224,14 +224,20 @@ class GeoFinderPopup {
                     }
                 );
 
+                console.log('Fallback Free model response status:', freeResponse.status);
+                
                 if (freeResponse.ok) {
-                    return 'gemini-2.0-flash-lite-001'; // Free model works
+                    console.log('Fallback Free model works!');
+                    return 'gemini-2.0-flash-lite-001';
+                } else {
+                    const errorText = await freeResponse.text();
+                    console.error('Fallback Free model failed:', freeResponse.status, errorText);
                 }
             } catch (fallbackError) {
-                // Both failed
+                console.error('Fallback test failed:', fallbackError);
             }
             
-            throw error;
+            throw new Error('API key not valid for any model. Please check your API key and try again.');
         }
     }
 
@@ -243,7 +249,6 @@ class GeoFinderPopup {
 
         const reader = new FileReader();
         reader.onload = (e) => {
-            // Clear previous image from cache
             this.clearPreviousImageFromCache();
             
             this.selectedImage = {
@@ -252,7 +257,6 @@ class GeoFinderPopup {
                 base64: e.target.result.split(',')[1],
                 method: 'upload'
             };
-            // Cache the image for upload method
             this.imageCache.set('upload', this.selectedImage);
             this.updateUploadArea();
             this.updateAnalyzeButton();
@@ -272,7 +276,7 @@ class GeoFinderPopup {
             `;
         } else {
             uploadContent.innerHTML = `
-                <span class="upload-icon">📷</span>
+                <span class="upload-icon">+</span>
                 <p>Click to select image or drag & drop</p>
             `;
         }
@@ -281,24 +285,20 @@ class GeoFinderPopup {
     switchMethod(method) {
         this.currentMethod = method;
         
-        // Update active tab
         document.querySelectorAll('.method-tab').forEach(tab => {
             tab.classList.toggle('active', tab.dataset.method === method);
         });
         
-        // Update active content
         document.querySelectorAll('.method-content').forEach(content => {
             content.classList.toggle('active', content.id === `${method}Method`);
         });
         
-        // Restore cached image for this method if available
         const cachedImage = this.imageCache.get(method);
         if (cachedImage) {
             this.selectedImage = cachedImage;
             this.updateAnalyzeButton();
             this.restorePreviews();
         } else {
-            // Clear previous image when switching methods
             this.selectedImage = null;
             this.updateAnalyzeButton();
             this.clearPreviews();
@@ -306,27 +306,22 @@ class GeoFinderPopup {
     }
 
     clearPreviews() {
-        // Clear upload preview
         const uploadArea = document.getElementById('uploadArea');
         const uploadContent = uploadArea.querySelector('.upload-content');
         uploadContent.innerHTML = `
-            <span class="upload-icon">📷</span>
+            <span class="upload-icon">+</span>
             <p>Click to select image or drag & drop</p>
         `;
         
-        // Clear URL preview
         document.getElementById('urlPreview').hidden = true;
         document.getElementById('imageUrl').value = '';
         
-        // Clear screen preview
         document.getElementById('screenPreview').hidden = true;
         
-        // Clear cache for current method
         this.imageCache.delete(this.currentMethod);
     }
 
     clearPreviousImageFromCache() {
-        // Clear the previous image from cache for the current method
         if (this.selectedImage && this.selectedImage.method) {
             this.imageCache.delete(this.selectedImage.method);
         }
@@ -375,12 +370,10 @@ class GeoFinderPopup {
         }
 
         try {
-            // Show loading state
             const loadBtn = document.getElementById('loadUrlBtn');
             loadBtn.textContent = 'Loading...';
             loadBtn.disabled = true;
 
-            // Fetch image from URL
             const response = await fetch(url);
             if (!response.ok) {
                 throw new Error('Failed to load image from URL');
@@ -390,7 +383,6 @@ class GeoFinderPopup {
             const reader = new FileReader();
             
             reader.onload = (e) => {
-                // Clear previous image from cache
                 this.clearPreviousImageFromCache();
                 
                 this.selectedImage = {
@@ -401,10 +393,8 @@ class GeoFinderPopup {
                     method: 'url'
                 };
                 
-                // Cache the image for URL method
                 this.imageCache.set('url', this.selectedImage);
                 
-                // Show preview
                 const preview = document.getElementById('urlPreview');
                 const previewImg = document.getElementById('urlPreviewImg');
                 const previewText = document.getElementById('urlPreviewText');
@@ -415,7 +405,6 @@ class GeoFinderPopup {
                 
                 this.updateAnalyzeButton();
                 
-                // Reset button
                 loadBtn.textContent = 'Load Image';
                 loadBtn.disabled = false;
             };
@@ -426,7 +415,6 @@ class GeoFinderPopup {
             console.error('URL loading error:', error);
             this.showError('Failed to load image from URL');
             
-            // Reset button
             const loadBtn = document.getElementById('loadUrlBtn');
             loadBtn.textContent = 'Load Image';
             loadBtn.disabled = false;
@@ -437,13 +425,10 @@ class GeoFinderPopup {
         try {
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             
-            // Capture the current tab
             const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
             
-            // Convert to base64
             const base64 = dataUrl.split(',')[1];
             
-            // Clear previous image from cache
             this.clearPreviousImageFromCache();
             
             this.selectedImage = {
@@ -454,10 +439,8 @@ class GeoFinderPopup {
                 method: 'screen'
             };
             
-            // Cache the image for screen method
             this.imageCache.set('screen', this.selectedImage);
             
-            // Show preview
             const preview = document.getElementById('screenPreview');
             const previewImg = document.getElementById('screenPreviewImg');
             const previewText = document.getElementById('screenPreviewText');
@@ -484,7 +467,6 @@ class GeoFinderPopup {
         const btnText = analyzeBtn.querySelector('.btn-text');
         const spinner = analyzeBtn.querySelector('.loading-spinner');
 
-        // Show loading state
         btnText.textContent = 'Analyzing...';
         spinner.hidden = false;
         analyzeBtn.disabled = true;
@@ -492,7 +474,6 @@ class GeoFinderPopup {
         try {
             const context = document.getElementById('context').value.trim();
             
-            // Log some debugging info
             console.log('Starting analysis with model:', this.selectedModel);
             console.log('Image size:', this.selectedImage.base64.length, 'characters');
 
@@ -501,10 +482,8 @@ class GeoFinderPopup {
         } catch (error) {
             console.error('Analysis error:', error);
             
-            // Show the specific error message from the API call
             this.showError(error.message);
         } finally {
-            // Reset button state
             btnText.textContent = 'Analyze Image';
             spinner.hidden = true;
             analyzeBtn.disabled = false;
@@ -550,14 +529,26 @@ class GeoFinderPopup {
                 const errorText = await response.text();
                 console.error('API Response Error:', response.status, errorText);
                 
-                // Retry logic for 503 errors (overloaded)
                 if (response.status === 503 && retryCount < 3) {
                     console.log(`API overloaded, retrying in ${(retryCount + 1) * 2} seconds... (attempt ${retryCount + 1}/3)`);
                     await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 2000));
                     return this.callGeminiAPI(imageBase64, context, retryCount + 1);
                 }
                 
-                // Provide more specific error messages
+                if ((response.status === 403 || response.status === 401) && this.selectedModel !== 'gemini-2.0-flash-lite-001') {
+                    console.log('Current model failed, trying free model as fallback...');
+                    const originalModel = this.selectedModel;
+                    this.selectedModel = 'gemini-2.0-flash-lite-001';
+                    try {
+                        const result = await this.callGeminiAPI(imageBase64, context, retryCount);
+                        this.selectedModel = originalModel;
+                        return result;
+                    } catch (fallbackError) {
+                        this.selectedModel = originalModel;
+                        throw fallbackError;
+                    }
+                }
+                
                 if (response.status === 401 || response.status === 403) {
                     throw new Error('Invalid API key. Please check your settings.');
                 } else if (response.status === 429) {
@@ -580,13 +571,10 @@ class GeoFinderPopup {
             console.log('Raw API response:', responseText);
             
             try {
-                // Try to clean the response text before parsing
                 let cleanedText = responseText.trim();
                 
-                // Remove markdown code blocks if present
                 cleanedText = cleanedText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
                 
-                // Try to find JSON object in the response
                 const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
                 if (jsonMatch) {
                     cleanedText = jsonMatch[0];
@@ -598,7 +586,6 @@ class GeoFinderPopup {
                 console.error('Failed to parse JSON response:', responseText);
                 console.error('Parse error:', parseError);
                 
-                // Try to extract any useful information from the response
                 if (responseText.includes('error') || responseText.includes('Error')) {
                     throw new Error(`API Error: ${responseText}`);
                 } else {
@@ -704,7 +691,6 @@ Consider these key aspects for accurate location identification:
         } else {
             let html = '';
 
-            // Display interpretation
             if (result.interpretation) {
                 html += `
                     <div class="interpretation">
@@ -714,7 +700,6 @@ Consider these key aspects for accurate location identification:
                 `;
             }
 
-            // Display locations
             if (result.locations && result.locations.length > 0) {
                 html += '<div class="locations">';
                 result.locations.forEach((location, index) => {
@@ -723,10 +708,10 @@ Consider these key aspects for accurate location identification:
                         `https://www.google.com/maps?q=${location.coordinates.latitude},${location.coordinates.longitude}` : '';
                     
                     html += `
-                        <div class="location-card ${confidenceClass}">
+                        <div class="location-card">
                             <div class="location-header">
-                                <h4>Location ${index + 1}</h4>
-                                <span class="confidence ${confidenceClass}">Confidence: ${location.confidence || 'Unknown'}</span>
+                                <div class="location-name">Location ${index + 1}</div>
+                                <span class="confidence-badge confidence-${confidenceClass}">${location.confidence || 'Unknown'}</span>
                             </div>
                             <div class="location-details">
                                 <div class="detail-item">
@@ -735,12 +720,11 @@ Consider these key aspects for accurate location identification:
                                 ${location.state ? `<div class="detail-item"><strong>Region:</strong> ${location.state}</div>` : ''}
                                 ${location.city ? `<div class="detail-item"><strong>City:</strong> ${location.city}</div>` : ''}
                                 ${location.coordinates ? `
-                                    <div class="detail-item">
-                                        <strong>Coordinates:</strong>
-                                        📍 ${location.coordinates.latitude.toFixed(4)}, ${location.coordinates.longitude.toFixed(4)}
+                                    <div class="coordinates">
+                                        <strong>Coordinates:</strong> ${location.coordinates.latitude.toFixed(4)}, ${location.coordinates.longitude.toFixed(4)}
                                     </div>
                                     <a href="${mapsUrl}" target="_blank" class="maps-link">
-                                        🗺️ View on Google Maps
+                                        View on Google Maps
                                     </a>
                                 ` : ''}
                             </div>
@@ -771,28 +755,24 @@ Consider these key aspects for accurate location identification:
     }
 
     showNotification(message, type) {
-        // Remove existing notification
         const existingNotification = document.getElementById('notification');
         if (existingNotification) {
             existingNotification.remove();
         }
 
-        // Create notification element
         const notification = document.createElement('div');
         notification.id = 'notification';
         notification.className = `notification notification-${type}`;
         notification.innerHTML = `
             <div class="notification-content">
-                <span class="notification-icon">${type === 'error' ? '❌' : '✅'}</span>
+                <span class="notification-icon">${type === 'error' ? 'Error' : 'Success'}</span>
                 <span class="notification-text">${message}</span>
                 <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
             </div>
         `;
 
-        // Add to page
         document.body.appendChild(notification);
 
-        // Auto remove after 5 seconds
         setTimeout(() => {
             if (notification.parentElement) {
                 notification.remove();
@@ -805,13 +785,13 @@ Consider these key aspects for accurate location identification:
         const modelStatus = document.getElementById('modelStatus');
         
         if (modelType === 'gemini-1.5-pro') {
-            modelStatus.innerHTML = '🚀 <strong>Pro Model</strong> - Enhanced analysis capabilities';
-            modelInfo.style.background = '#d4edda';
-            modelInfo.style.color = '#155724';
+            modelStatus.innerHTML = '<strong>Pro Model</strong> - Enhanced analysis capabilities';
+            modelInfo.style.background = '#e8f5e8';
+            modelInfo.style.color = '#2e7d32';
         } else {
-            modelStatus.innerHTML = '🆓 <strong>Free Model</strong> - Basic analysis capabilities';
-            modelInfo.style.background = '#fff3cd';
-            modelInfo.style.color = '#856404';
+            modelStatus.innerHTML = '<strong>Free Model</strong> - Basic analysis capabilities';
+            modelInfo.style.background = '#fff3e0';
+            modelInfo.style.color = '#ef6c00';
         }
         
         modelInfo.style.display = 'block';
@@ -820,20 +800,20 @@ Consider these key aspects for accurate location identification:
     openSettings() {
         document.getElementById('settingsSection').hidden = false;
         document.getElementById('mainContent').hidden = true;
+        document.body.classList.add('settings-open');
     }
 
     closeSettings() {
         document.getElementById('settingsSection').hidden = true;
         document.getElementById('mainContent').hidden = false;
+        document.body.classList.remove('settings-open');
     }
 
     updateUI() {
-        // Update UI based on current state
         this.updateAnalyzeButton();
     }
 }
 
-// Initialize the popup when the DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     new GeoFinderPopup();
 }); 

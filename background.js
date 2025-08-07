@@ -1,36 +1,25 @@
-// Background service worker for GeoFinder extension
-
-// Handle extension installation
 chrome.runtime.onInstalled.addListener((details) => {
     if (details.reason === 'install') {
-        // First time installation
-        console.log('GeoFinder extension installed successfully!');
-        
-        // Open welcome page or show instructions
+
         chrome.tabs.create({
             url: 'https://ai.google.dev/'
         });
     }
 });
 
-// Handle extension icon click
 chrome.action.onClicked.addListener((tab) => {
-    // This will open the popup defined in manifest.json
     console.log('GeoFinder extension clicked');
 });
 
-// Handle messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'getApiKey') {
-        // Return API key to content script
         chrome.storage.sync.get(['geminiApiKey'], (result) => {
             sendResponse({ apiKey: result.geminiApiKey || '' });
         });
-        return true; // Keep message channel open for async response
+        return true;
     }
     
     if (message.action === 'analyzeImage') {
-        // Handle image analysis request from content script
         handleImageAnalysis(message.imageData, message.context)
             .then(result => {
                 sendResponse({ success: true, result });
@@ -38,14 +27,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             .catch(error => {
                 sendResponse({ success: false, error: error.message });
             });
-        return true; // Keep message channel open for async response
+        return true;
     }
 });
 
-// Handle image analysis in background
 async function handleImageAnalysis(imageBase64, context) {
     try {
-        // Get API key from storage
         const result = await chrome.storage.sync.get(['geminiApiKey']);
         const apiKey = result.geminiApiKey;
         
@@ -53,7 +40,6 @@ async function handleImageAnalysis(imageBase64, context) {
             throw new Error('API key not found. Please set your Gemini API key in the extension popup.');
         }
 
-        // Call Gemini API
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite-001:generateContent?key=${apiKey}`,
             {
@@ -91,13 +77,10 @@ async function handleImageAnalysis(imageBase64, context) {
         const rawText = data.candidates[0].content.parts[0].text;
         console.log('Raw API response (background):', rawText);
         
-        // Clean up the response
         let jsonString = rawText.trim();
         
-        // Remove markdown code blocks if present
         jsonString = jsonString.replace(/```json\s*/g, '').replace(/```\s*/g, '');
         
-        // Try to find JSON object in the response
         const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
             jsonString = jsonMatch[0];
@@ -111,7 +94,6 @@ async function handleImageAnalysis(imageBase64, context) {
             console.error('Failed to parse API response (background):', e);
             console.error('Raw response was:', rawText);
             
-            // Try to extract any useful information from the response
             if (rawText.includes('error') || rawText.includes('Error')) {
                 throw new Error(`API Error: ${rawText}`);
             } else {
@@ -200,17 +182,14 @@ Consider these key aspects for accurate location identification:
     return prompt;
 }
 
-// Handle storage changes
 chrome.storage.onChanged.addListener((changes, namespace) => {
     if (namespace === 'sync' && changes.geminiApiKey) {
         console.log('API key updated:', changes.geminiApiKey.newValue ? 'Set' : 'Removed');
     }
 });
 
-// Handle tab updates to inject content script if needed
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('http')) {
-        // Content script is automatically injected via manifest.json
         console.log('Tab updated, content script should be active');
     }
 }); 

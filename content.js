@@ -19,18 +19,14 @@ class GeoFinderContent {
         });
     }
 
-
-
     addGuessButtons() {
-        // Add guess buttons to images on the page
         const images = document.querySelectorAll('img');
         images.forEach(img => {
-            if (img.width > 100 && img.height > 100) { // Only add to reasonably sized images
+            if (img.width > 100 && img.height > 100) {
                 this.addGuessButtonToImage(img);
             }
         });
 
-        // Watch for dynamically added images
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
                 mutation.addedNodes.forEach((node) => {
@@ -59,28 +55,25 @@ class GeoFinderContent {
     }
 
     addGuessButtonToImage(img) {
-        // Check if button already exists
         if (img.nextElementSibling && img.nextElementSibling.classList.contains('geofinder-guess-btn')) {
             return;
         }
 
-        // Create guess button
         const guessBtn = document.createElement('button');
         guessBtn.className = 'geofinder-guess-btn';
-        guessBtn.innerHTML = '🌍 Guess';
+        guessBtn.innerHTML = 'Guess';
         guessBtn.title = 'Click to analyze this image location';
         
-        // Style the button
         guessBtn.style.cssText = `
             position: absolute;
             top: 7px;
             right: 7px;
-            background: rgba(90, 111, 204, 0.9);
+            background: #8FBC8F;
             color: white;
             border: none;
             padding: 8px 12px;
             border-radius: 6px;
-            font-size: 10px;
+            font-size: 12px;
             cursor: pointer;
             z-index: 10000;
             opacity: 0;
@@ -89,19 +82,16 @@ class GeoFinderContent {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         `;
 
-        // Create wrapper for image and button
         const wrapper = document.createElement('div');
         wrapper.style.cssText = `
             position: relative;
             display: inline-block;
         `;
 
-        // Insert wrapper before image
         img.parentNode.insertBefore(wrapper, img);
         wrapper.appendChild(img);
         wrapper.appendChild(guessBtn);
 
-        // Show button on hover
         wrapper.addEventListener('mouseenter', () => {
             guessBtn.style.opacity = '1';
         });
@@ -110,15 +100,12 @@ class GeoFinderContent {
             guessBtn.style.opacity = '0';
         });
 
-        // Handle click
         guessBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
             this.analyzeImage(img.src);
         });
     }
-
-
 
     async analyzeImage(imageSrc) {
         if (!this.apiKey) {
@@ -129,17 +116,29 @@ class GeoFinderContent {
         this.showNotification('Analyzing image...', 'info');
 
         try {
-            // Convert image to base64
             const base64 = await this.imageToBase64(imageSrc);
             
-            // Call Gemini API
+            const model = await this.getSelectedModel();
+            console.log('Starting image analysis with model:', model);
+            
             const result = await this.callGeminiAPI(base64);
             
-            // Display results
             this.showResults(result);
         } catch (error) {
             console.error('Analysis error:', error);
-            this.showNotification('Failed to analyze image. Please check your API key.', 'error');
+            
+            let errorMessage = error.message;
+            if (error.message.includes('Invalid API key')) {
+                errorMessage = 'Invalid API key. Please check your settings.';
+            } else if (error.message.includes('Rate limit')) {
+                errorMessage = 'Rate limit exceeded. Please try again later.';
+            } else if (error.message.includes('overloaded')) {
+                errorMessage = 'API is currently overloaded. Please try again later.';
+            } else if (error.message.includes('Network error')) {
+                errorMessage = 'Network error. Please check your internet connection.';
+            }
+            
+            this.showNotification(`Analysis failed: ${errorMessage}`, 'error');
         }
     }
 
@@ -174,8 +173,10 @@ class GeoFinderContent {
         });
     }
 
-    async callGeminiAPI(imageBase64) {
+    async callGeminiAPI(imageBase64, retryCount = 0) {
         const prompt = this.buildPrompt();
+        
+        const model = await this.getSelectedModel();
         
         const requestBody = {
             contents: [{
@@ -197,32 +198,86 @@ class GeoFinderContent {
             }
         };
 
-        const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite-001:generateContent?key=${this.apiKey}`,
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestBody)
-            }
-        );
-
-        if (!response.ok) {
-            throw new Error(`API request failed: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const rawText = data.candidates[0].content.parts[0].text;
-        
-        // Clean up the response
-        const jsonString = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        
         try {
-            return JSON.parse(jsonString);
-        } catch (e) {
-            throw new Error('Failed to parse API response');
+            const response = await fetch(
+                `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${this.apiKey}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody)
+                }
+            );
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('API Response Error:', response.status, errorText);
+                
+                if (response.status === 503 && retryCount < 3) {
+                    console.log(`API overloaded, retrying in ${(retryCount + 1) * 2} seconds... (attempt ${retryCount + 1}/3)`);
+                    await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 2000));
+                    return this.callGeminiAPI(imageBase64, retryCount + 1);
+                }
+                
+                if (response.status === 401 || response.status === 403) {
+                    throw new Error('Invalid API key. Please check your settings.');
+                } else if (response.status === 429) {
+                    throw new Error('Rate limit exceeded. Please try again later.');
+                } else if (response.status === 503) {
+                    throw new Error('API is currently overloaded. Please try again later.');
+                } else {
+                    throw new Error(`API Error ${response.status}: ${errorText}`);
+                }
+            }
+
+            const data = await response.json();
+            
+            if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+                console.error('Invalid API response structure:', data);
+                throw new Error('Invalid response from Gemini API');
+            }
+
+            const responseText = data.candidates[0].content.parts[0].text;
+            console.log('Raw API response:', responseText);
+            
+            try {
+                let cleanedText = responseText.trim();
+                
+                cleanedText = cleanedText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+                
+                const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    cleanedText = jsonMatch[0];
+                }
+                
+                console.log('Cleaned response for parsing:', cleanedText);
+                return JSON.parse(cleanedText);
+            } catch (parseError) {
+                console.error('Failed to parse JSON response:', responseText);
+                console.error('Parse error:', parseError);
+                
+                if (responseText.includes('error') || responseText.includes('Error')) {
+                    throw new Error(`API Error: ${responseText}`);
+                } else {
+                    throw new Error('API returned invalid JSON format. Please try again.');
+                }
+            }
+        } catch (fetchError) {
+            console.error('Fetch error:', fetchError);
+            if (fetchError.name === 'TypeError' && fetchError.message.includes('fetch')) {
+                throw new Error('Network error. Please check your internet connection.');
+            }
+            throw fetchError;
         }
+    }
+
+    async getSelectedModel() {
+        return new Promise((resolve) => {
+            chrome.storage.sync.get(['selectedModel'], (result) => {
+                resolve(result.selectedModel || 'gemini-2.0-flash-lite-001');
+            });
+        });
     }
 
     buildPrompt() {
@@ -299,17 +354,14 @@ Remember: Your response must be a valid JSON object only. No additional text or 
             return;
         }
 
-        // Create overlay for results
         this.createResultsOverlay(result);
     }
 
     createResultsOverlay(result) {
-        // Remove existing overlay
         if (this.overlay) {
             document.body.removeChild(this.overlay);
         }
 
-        // Create new overlay
         this.overlay = document.createElement('div');
         this.overlay.className = 'geofinder-overlay';
         this.overlay.style.cssText = `
@@ -326,7 +378,6 @@ Remember: Your response must be a valid JSON object only. No additional text or 
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         `;
 
-        // Create results container
         const resultsContainer = document.createElement('div');
         resultsContainer.style.cssText = `
             background: white;
@@ -345,7 +396,6 @@ Remember: Your response must be a valid JSON object only. No additional text or 
             </div>
         `;
 
-        // Display interpretation
         if (result.interpretation) {
             html += `
                 <div style="background: #e3f2fd; border-radius: 8px; padding: 15px; margin-bottom: 15px; border-left: 4px solid #2196f3;">
@@ -355,7 +405,6 @@ Remember: Your response must be a valid JSON object only. No additional text or 
             `;
         }
 
-        // Display locations
         if (result.locations && result.locations.length > 0) {
             result.locations.forEach((location, index) => {
                 const confidenceColor = location.confidence === 'High' ? '#d4edda' : 
@@ -395,19 +444,16 @@ Remember: Your response must be a valid JSON object only. No additional text or 
         this.overlay.appendChild(resultsContainer);
         document.body.appendChild(this.overlay);
 
-        // Handle close button
         document.getElementById('closeOverlay').addEventListener('click', () => {
             this.hideResultsOverlay();
         });
 
-        // Close on overlay click
         this.overlay.addEventListener('click', (e) => {
             if (e.target === this.overlay) {
                 this.hideResultsOverlay();
             }
         });
 
-        // Close on Escape key
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 this.hideResultsOverlay();
@@ -423,13 +469,11 @@ Remember: Your response must be a valid JSON object only. No additional text or 
     }
 
     showNotification(message, type = 'info') {
-        // Remove existing notification
         const existingNotification = document.querySelector('.geofinder-notification');
         if (existingNotification) {
             document.body.removeChild(existingNotification);
         }
 
-        // Create notification
         const notification = document.createElement('div');
         notification.className = 'geofinder-notification';
         
@@ -457,7 +501,6 @@ Remember: Your response must be a valid JSON object only. No additional text or 
         notification.textContent = message;
         document.body.appendChild(notification);
 
-        // Auto-remove after 5 seconds
         setTimeout(() => {
             if (notification.parentNode) {
                 notification.style.animation = 'slideOut 0.3s ease';
@@ -478,7 +521,6 @@ Remember: Your response must be a valid JSON object only. No additional text or 
     }
 }
 
-// Add CSS animations
 const style = document.createElement('style');
 style.textContent = `
     @keyframes slideIn {
@@ -505,5 +547,4 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-// Initialize the content script
 new GeoFinderContent(); 
