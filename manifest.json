@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GeoFinder - Photo Location Detector",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Analyze photos to find their geographical location using AI",
   "permissions": [
     "activeTab",
