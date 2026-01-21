@@ -1,0 +1,519 @@
+// GeoFinder Popup - Clean Refactored Version
+class GeoFinderPopup {
+    constructor() {
+        this.apiKey = '';
+        this.selectedImage = null;
+        this.currentMethod = 'upload';
+        this.selectedModel = 'gemini-2.5-flash';
+        this.maxImageDimension = 1024;
+        this.maxImageBytes = 10 * 1024 * 1024;
+        this.imageCache = new Map();
+        this.init();
+    }
+
+    // Escape HTML to prevent XSS attacks
+    escapeHtml(text) {
+        if (text == null) return '';
+        const div = document.createElement('div');
+        div.textContent = String(text);
+        return div.innerHTML;
+    }
+
+    init() {
+        this.loadApiKey();
+        this.loadCachedState();
+        this.restoreAnalysisState();
+        this.setupEventListeners();
+    }
+
+    loadApiKey() {
+        chrome.storage.local.get(['geminiApiKey'], (result) => {
+            if (result.geminiApiKey) {
+                this.apiKey = result.geminiApiKey;
+                document.getElementById('apiKey').value = this.apiKey;
+            }
+            this.updateModelInfo();
+            this.updateAnalyzeButton();
+        });
+    }
+
+    setupEventListeners() {
+        // Settings
+        document.getElementById('settingsBtn').addEventListener('click', () => this.openSettings());
+        document.getElementById('backBtn').addEventListener('click', () => this.closeSettings());
+        document.getElementById('saveApiKey').addEventListener('click', () => this.saveApiKey());
+        document.getElementById('apiKey').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.saveApiKey();
+        });
+
+        // Method tabs
+        document.querySelectorAll('.method-tab').forEach(tab => {
+            tab.addEventListener('click', () => this.switchMethod(tab.dataset.method));
+        });
+
+        // Upload
+        const uploadArea = document.getElementById('uploadArea');
+        const imageInput = document.getElementById('imageInput');
+
+        uploadArea.addEventListener('click', () => imageInput.click());
+        uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+        uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) this.handleImageSelection(e.dataTransfer.files[0]);
+        });
+        imageInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) this.handleImageSelection(e.target.files[0]);
+        });
+
+        // URL
+        document.getElementById('loadUrlBtn').addEventListener('click', () => this.loadImageFromUrl());
+        document.getElementById('imageUrl').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.loadImageFromUrl();
+        });
+
+        // Screen capture
+        document.getElementById('captureTabBtn').addEventListener('click', () => this.captureCurrentTab());
+
+        // Analyze
+        document.getElementById('analyzeBtn').addEventListener('click', () => this.analyzeImage());
+
+        // Context
+        document.getElementById('context').addEventListener('input', () => this.saveCachedState());
+    }
+
+    saveApiKey() {
+        const apiKey = document.getElementById('apiKey').value.trim();
+        if (!apiKey) {
+            this.showNotification('API key is required', 'error');
+            return;
+        }
+
+        this.apiKey = apiKey;
+        chrome.storage.local.set({ geminiApiKey: apiKey }, () => {
+            this.showNotification('API key saved', 'success');
+            this.updateModelInfo();
+            this.updateAnalyzeButton();
+        });
+    }
+
+    handleImageSelection(file) {
+        if (!file.type.startsWith('image/')) {
+            this.showNotification('Unsupported file format', 'error');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            this.selectedImage = {
+                file: file,
+                dataUrl: e.target.result,
+                base64: e.target.result.split(',')[1],
+                mimeType: file.type || 'image/jpeg',
+                method: 'upload'
+            };
+            this.imageCache.set('upload', this.selectedImage);
+            this.updateUploadArea();
+            this.updateAnalyzeButton();
+            this.saveCachedState();
+        };
+        reader.readAsDataURL(file);
+    }
+
+    updateUploadArea() {
+        const uploadArea = document.getElementById('uploadArea');
+        const uploadContent = uploadArea.querySelector('.upload-content');
+
+        if (this.selectedImage) {
+            // Escape file name to prevent XSS
+            const escapedFileName = this.selectedImage.file ? this.escapeHtml(this.selectedImage.file.name) : 'Image loaded';
+            // Note: dataUrl is safe as it's a data URI generated by FileReader
+            uploadContent.innerHTML = `
+                <img src="${this.selectedImage.dataUrl}" class="preview-image" alt="Preview">
+                <p>${escapedFileName}</p>
+                <p style="font-size: 12px; color: #6c757d;">Click to change</p>
+            `;
+        } else {
+            uploadContent.innerHTML = `
+                <span class="upload-icon">+</span>
+                <p>Click to select image or drag & drop</p>
+            `;
+        }
+    }
+
+    switchMethod(method) {
+        this.currentMethod = method;
+        this.saveCachedState();
+
+        document.querySelectorAll('.method-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.method === method);
+        });
+        document.querySelectorAll('.method-content').forEach(content => {
+            content.classList.toggle('active', content.id === `${method}Method`);
+        });
+
+        const cachedImage = this.imageCache.get(method);
+        this.selectedImage = cachedImage || null;
+        this.updateAnalyzeButton();
+        if (cachedImage) this.restorePreviews();
+        else this.clearPreviews();
+    }
+
+    clearPreviews() {
+        const uploadArea = document.getElementById('uploadArea');
+        uploadArea.querySelector('.upload-content').innerHTML = `
+            <span class="upload-icon">+</span>
+            <p>Click to select image or drag & drop</p>
+        `;
+        document.getElementById('urlPreview').hidden = true;
+        document.getElementById('imageUrl').value = '';
+        document.getElementById('screenPreview').hidden = true;
+    }
+
+    restorePreviews() {
+        if (!this.selectedImage) return;
+
+        if (this.selectedImage.method === 'upload') {
+            this.updateUploadArea();
+        } else if (this.selectedImage.method === 'url') {
+            document.getElementById('urlPreviewImg').src = this.selectedImage.dataUrl;
+            document.getElementById('urlPreviewText').textContent = 'Image loaded';
+            document.getElementById('urlPreview').hidden = false;
+        } else if (this.selectedImage.method === 'screen') {
+            document.getElementById('screenPreviewImg').src = this.selectedImage.dataUrl;
+            document.getElementById('screenPreviewText').textContent = 'Tab captured';
+            document.getElementById('screenPreview').hidden = false;
+        }
+    }
+
+    updateAnalyzeButton() {
+        document.getElementById('analyzeBtn').disabled = !this.apiKey || !this.selectedImage;
+    }
+
+    async loadImageFromUrl() {
+        const url = document.getElementById('imageUrl').value.trim();
+        if (!url) {
+            this.showNotification('Please enter a valid URL', 'error');
+            return;
+        }
+
+        const loadBtn = document.getElementById('loadUrlBtn');
+        loadBtn.textContent = 'Loading...';
+        loadBtn.disabled = true;
+
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error('Failed to load image');
+
+            const blob = await response.blob();
+            const reader = new FileReader();
+
+            reader.onload = (e) => {
+                this.selectedImage = {
+                    dataUrl: e.target.result,
+                    base64: e.target.result.split(',')[1],
+                    mimeType: blob.type || 'image/jpeg',
+                    url: url,
+                    method: 'url'
+                };
+                this.imageCache.set('url', this.selectedImage);
+
+                document.getElementById('urlPreviewImg').src = this.selectedImage.dataUrl;
+                document.getElementById('urlPreviewText').textContent = 'Image loaded';
+                document.getElementById('urlPreview').hidden = false;
+
+                this.updateAnalyzeButton();
+                this.saveCachedState();
+                loadBtn.textContent = 'Load Image';
+                loadBtn.disabled = false;
+            };
+            reader.readAsDataURL(blob);
+
+        } catch (error) {
+            console.error('URL loading error:', error);
+            this.showNotification('Failed to load image from URL', 'error');
+            loadBtn.textContent = 'Load Image';
+            loadBtn.disabled = false;
+        }
+    }
+
+    async captureCurrentTab() {
+        try {
+            const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+
+            this.selectedImage = {
+                dataUrl: dataUrl,
+                base64: dataUrl.split(',')[1],
+                mimeType: 'image/png',
+                method: 'screen'
+            };
+            this.imageCache.set('screen', this.selectedImage);
+
+            document.getElementById('screenPreviewImg').src = dataUrl;
+            document.getElementById('screenPreviewText').textContent = 'Tab captured';
+            document.getElementById('screenPreview').hidden = false;
+
+            this.updateAnalyzeButton();
+            this.saveCachedState();
+
+        } catch (error) {
+            console.error('Capture error:', error);
+            this.showNotification('Failed to capture tab', 'error');
+        }
+    }
+
+    async analyzeImage() {
+        if (!this.apiKey || !this.selectedImage) {
+            this.showNotification('Please select an image and set API key', 'error');
+            return;
+        }
+
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const btnText = analyzeBtn.querySelector('.btn-text');
+        const spinner = analyzeBtn.querySelector('.loading-spinner');
+
+        btnText.textContent = 'Analyzing...';
+        spinner.hidden = false;
+        analyzeBtn.disabled = true;
+
+        try {
+            const context = document.getElementById('context').value.trim();
+            const preparedImage = await this.prepareImage(this.selectedImage);
+
+            // Send to background script
+            chrome.runtime.sendMessage({
+                action: 'startAnalysis',
+                imageBase64: preparedImage.base64,
+                mimeType: preparedImage.mimeType,
+                context: context,
+                apiKey: this.apiKey,
+                model: this.selectedModel
+            });
+
+            this.pollAnalysisCompletion();
+
+        } catch (error) {
+            console.error('Analysis error:', error);
+            this.showNotification(error.message, 'error');
+            btnText.textContent = 'Analyze Image';
+            spinner.hidden = true;
+            analyzeBtn.disabled = false;
+        }
+    }
+
+    async prepareImage(imageData) {
+        const dataUrl = imageData.dataUrl;
+        if (!dataUrl) throw new Error('Invalid image data');
+
+        const image = await this.loadImage(dataUrl);
+        const needsResize = image.width > this.maxImageDimension || image.height > this.maxImageDimension;
+
+        if (!needsResize) {
+            return { base64: imageData.base64, mimeType: imageData.mimeType };
+        }
+
+        // Resize
+        const ratio = Math.min(this.maxImageDimension / image.width, this.maxImageDimension / image.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(image.width * ratio);
+        canvas.height = Math.round(image.height * ratio);
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+        const outputDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        return {
+            base64: outputDataUrl.split(',')[1],
+            mimeType: 'image/jpeg'
+        };
+    }
+
+    loadImage(dataUrl) {
+        return new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => resolve(image);
+            image.onerror = () => reject(new Error('Failed to load image'));
+            image.src = dataUrl;
+        });
+    }
+
+    displayResults(result) {
+        const resultsSection = document.getElementById('resultsSection');
+        const resultsContent = document.getElementById('resultsContent');
+
+        if (result.error) {
+            // Escape error message to prevent XSS
+            const escapedError = this.escapeHtml(result.error);
+            resultsContent.innerHTML = `<div class="error-message"><strong>Error:</strong> ${escapedError}</div>`;
+        } else {
+            let html = '<div class="locations">';
+
+            if (result.locations && result.locations.length > 0) {
+                result.locations.forEach((loc, i) => {
+                    // Escape all user-controlled data
+                    const confClass = this.escapeHtml(loc.confidence?.toLowerCase() || 'unknown');
+                    const escapedCity = this.escapeHtml(loc.city || '');
+                    const escapedState = this.escapeHtml(loc.state || '');
+                    const escapedCountry = this.escapeHtml(loc.country || '');
+                    const locationName = [escapedCity, escapedState, escapedCountry].filter(Boolean).join(', ') || 'Unknown';
+                    
+                    // Coordinates are numbers, but validate and escape for safety
+                    const lat = typeof loc.coordinates?.latitude === 'number' ? loc.coordinates.latitude : 0;
+                    const lon = typeof loc.coordinates?.longitude === 'number' ? loc.coordinates.longitude : 0;
+                    const mapsUrl = loc.coordinates ?
+                        `https://www.google.com/maps?q=${lat},${lon}` : '';
+                    
+                    const escapedReason = this.escapeHtml(loc.reason || loc.explanation || '');
+                    const escapedConfidence = this.escapeHtml(loc.confidence || 'Unknown');
+
+                    html += `
+                        <div class="location-card">
+                            <div class="location-header">
+                                <div class="location-name">#${i + 1}</div>
+                                <span class="confidence-badge confidence-${confClass}">${escapedConfidence}</span>
+                            </div>
+                            <div class="location-details">
+                                <div class="detail-item"><strong>${locationName}</strong></div>
+                                ${loc.coordinates ? `<a href="${mapsUrl}" target="_blank" class="maps-link">📍 ${lat.toFixed(4)}, ${lon.toFixed(4)}</a>` : ''}
+                            </div>
+                            ${escapedReason ? `<div class="explanation">${escapedReason}</div>` : ''}
+                        </div>
+                    `;
+                });
+            }
+
+            html += '</div>';
+            resultsContent.innerHTML = html;
+        }
+
+        resultsSection.hidden = false;
+        resultsSection.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    showNotification(message, type) {
+        const existing = document.getElementById('notification');
+        if (existing) existing.remove();
+
+        // Escape message to prevent XSS
+        const escapedMessage = this.escapeHtml(message);
+        const notification = document.createElement('div');
+        notification.id = 'notification';
+        notification.className = `notification notification-${type}`;
+        notification.innerHTML = `
+            <div class="notification-content">
+                <span class="notification-text">${escapedMessage}</span>
+                <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
+            </div>
+        `;
+        document.body.appendChild(notification);
+        setTimeout(() => notification.remove(), 5000);
+    }
+
+    updateModelInfo() {
+        const modelInfo = document.getElementById('modelInfo');
+        const modelStatus = document.getElementById('modelStatus');
+
+        modelStatus.innerHTML = `<strong>Model:</strong> ${this.selectedModel}<br><small>✓ Auto-selected, fallback enabled</small>`;
+        modelInfo.style.cssText = 'display: block; background: #e8f5e8; color: #2e7d32; border: 1px solid var(--accent);';
+    }
+
+    openSettings() {
+        document.getElementById('settingsSection').hidden = false;
+        document.getElementById('mainContent').hidden = true;
+    }
+
+    closeSettings() {
+        document.getElementById('settingsSection').hidden = true;
+        document.getElementById('mainContent').hidden = false;
+    }
+
+    loadCachedState() {
+        chrome.storage.local.get(['cachedImages', 'cachedContext', 'cachedMethod'], (result) => {
+            if (result.cachedImages) {
+                Object.entries(result.cachedImages).forEach(([method, image]) => {
+                    if (image?.dataUrl && image?.base64) {
+                        this.imageCache.set(method, image);
+                    }
+                });
+            }
+            if (result.cachedContext) {
+                document.getElementById('context').value = result.cachedContext;
+            }
+            if (result.cachedMethod) {
+                this.currentMethod = result.cachedMethod;
+                const cachedImage = this.imageCache.get(this.currentMethod);
+                if (cachedImage) {
+                    this.selectedImage = cachedImage;
+                    this.restorePreviews();
+                }
+                this.updateAnalyzeButton();
+            }
+        });
+    }
+
+    saveCachedState() {
+        const cachedImages = {};
+        this.imageCache.forEach((image, method) => {
+            cachedImages[method] = {
+                dataUrl: image.dataUrl,
+                base64: image.base64,
+                mimeType: image.mimeType,
+                url: image.url,
+                method: image.method
+            };
+        });
+
+        chrome.storage.local.set({
+            cachedImages,
+            cachedContext: document.getElementById('context').value.trim(),
+            cachedMethod: this.currentMethod
+        });
+    }
+
+    restoreAnalysisState() {
+        chrome.storage.local.get(['analysisInProgress', 'lastAnalysisResult'], (data) => {
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            const btnText = analyzeBtn.querySelector('.btn-text');
+            const spinner = analyzeBtn.querySelector('.loading-spinner');
+
+            if (data.analysisInProgress) {
+                btnText.textContent = 'Analyzing...';
+                spinner.hidden = false;
+                analyzeBtn.disabled = true;
+                this.pollAnalysisCompletion();
+            } else if (data.lastAnalysisResult) {
+                if (data.lastAnalysisResult.error) {
+                    this.showNotification(data.lastAnalysisResult.error, 'error');
+                } else {
+                    this.displayResults(data.lastAnalysisResult);
+                }
+            }
+        });
+    }
+
+    pollAnalysisCompletion() {
+        const checkInterval = setInterval(() => {
+            chrome.storage.local.get(['analysisInProgress', 'lastAnalysisResult'], (data) => {
+                if (!data.analysisInProgress) {
+                    clearInterval(checkInterval);
+
+                    const analyzeBtn = document.getElementById('analyzeBtn');
+                    analyzeBtn.querySelector('.btn-text').textContent = 'Analyze Image';
+                    analyzeBtn.querySelector('.loading-spinner').hidden = true;
+                    analyzeBtn.disabled = false;
+
+                    if (data.lastAnalysisResult) {
+                        if (data.lastAnalysisResult.error) {
+                            this.showNotification(data.lastAnalysisResult.error, 'error');
+                        } else {
+                            this.displayResults(data.lastAnalysisResult);
+                        }
+                    }
+                }
+            });
+        }, 500);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => new GeoFinderPopup());
